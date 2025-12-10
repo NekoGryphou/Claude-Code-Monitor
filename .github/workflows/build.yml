@@ -1,0 +1,34 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  go-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Build
+        env:
+          GOCACHE: /tmp/go-build
+        run: |
+          mkdir -p bin
+          go build -trimpath -ldflags="-s -w" -o bin/claude-monitor ./cmd/usage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-monitor-linux-amd64
+          path: bin/claude-monitor
+

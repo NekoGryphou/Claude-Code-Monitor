@@ -1,0 +1,9 @@
+# Compiled binaries
+bin/
+
+# IDE
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
