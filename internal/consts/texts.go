@@ -3,7 +3,7 @@ package consts
 // User-facing copy and keys used across the application.
 const (
 	// HeaderTitle is the banner title shown in the UI header.
-	HeaderTitle = "Claude OAuth Usage"
+	HeaderTitle = "Claude Code Usage"
 	// TextNoData indicates no utilization was returned.
 	TextNoData = "No utilization data available."
 	// TextSeparatorDot is the middle dot separator for inline lists.
