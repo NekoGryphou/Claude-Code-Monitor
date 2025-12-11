@@ -3,6 +3,7 @@ module claude-monitor
 go 1.22
 
 require (
+	github.com/charmbracelet/bubbles v0.17.1
 	github.com/charmbracelet/bubbletea v0.27.1
 	github.com/charmbracelet/lipgloss v0.13.0
 )

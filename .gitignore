@@ -3,6 +3,7 @@ bin/
 
 # IDE
 .idea/
+.run/
 
 # OS-specific files
 .DS_Store

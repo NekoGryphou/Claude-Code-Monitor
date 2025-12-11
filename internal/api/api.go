@@ -9,28 +9,56 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"claude-monitor/internal/consts"
 )
 
 const (
-	apiURL        = "https://api.anthropic.com/api/oauth/usage"
-	betaHeaderVal = "oauth-2025-04-20"
+	apiURL = "https://api.anthropic.com/api/oauth/usage"
 )
 
-// WindowUsage holds utilization for a sliding window.
-// It implements custom JSON parsing so we keep only the parsed timestamp.
+// HTTPError captures structured details from non-2xx API responses.
+type HTTPError struct {
+	Status     int
+	Body       string
+	RetryAfter time.Duration
+}
+
+func (e HTTPError) Error() string {
+	return fmt.Sprintf(consts.TextHTTPErrorFmt, e.Status, e.Body)
+}
+
+// WindowUsage holds utilization for a sliding window and optional reset time.
 type WindowUsage struct {
 	Utilization *float64 `json:"utilization"`
 	ResetsAt    *time.Time
 }
 
+// UsageResponse contains rolling usage windows returned by the API.
 type UsageResponse struct {
 	FiveHour *WindowUsage `json:"five_hour"`
 	SevenDay *WindowUsage `json:"seven_day"`
 }
 
-func FetchUsage(ctx context.Context, client HTTPClient, token string) (UsageResponse, error) {
+// FetchUsage requests utilization data with the given HTTP client and token.
+//
+// Parameters:
+//
+//	ctx        - request context; cancellation/timeout is respected.
+//	client     - HTTP client to execute the request.
+//	token      - OAuth access token.
+//	betaHeader - anthropic-beta header value required by the API.
+//
+// Returns:
+//
+//	UsageResponse - parsed utilization windows.
+//	error         - non-nil on missing token, request failure, or decode error.
+func FetchUsage(ctx context.Context, client HTTPClient, token, betaHeader string) (UsageResponse, error) {
 	if strings.TrimSpace(token) == "" {
-		return UsageResponse{}, errors.New("missing OAuth token")
+		return UsageResponse{}, errors.New(consts.ErrMissingToken)
+	}
+	if strings.TrimSpace(betaHeader) == "" {
+		return UsageResponse{}, errors.New(consts.ErrBetaHeaderRequired)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
@@ -38,8 +66,8 @@ func FetchUsage(ctx context.Context, client HTTPClient, token string) (UsageResp
 		return UsageResponse{}, err
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("anthropic-beta", betaHeaderVal)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-beta", betaHeader)
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -49,21 +77,53 @@ func FetchUsage(ctx context.Context, client HTTPClient, token string) (UsageResp
 
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4_096))
-		return UsageResponse{}, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		bodyText := strings.TrimSpace(string(body))
+		if betaHeader == consts.DefaultBetaName {
+			bodyText = bodyText + " (beta header may be outdated; set -beta-header or ANTHROPIC_BETA_HEADER)"
+		}
+		return UsageResponse{}, HTTPError{
+			Status:     resp.StatusCode,
+			Body:       bodyText,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 
 	var payload UsageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	dec := json.NewDecoder(io.LimitReader(resp.Body, 32<<10))
+	if err := dec.Decode(&payload); err != nil {
 		return UsageResponse{}, err
 	}
 	return payload, nil
 }
 
-// HTTPClient matches http.Client's Do method for easy substitution in tests.
+// HTTPClient defines the minimal interface required to execute HTTP requests.
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// parseRetryAfter converts Retry-After header into a duration when possible.
+func parseRetryAfter(raw string) time.Duration {
+	if raw == "" {
+		return 0
+	}
+	if secs, err := time.ParseDuration(strings.TrimSpace(raw) + "s"); err == nil {
+		return secs
+	}
+	if ts, err := time.Parse(http.TimeFormat, raw); err == nil {
+		return time.Until(ts)
+	}
+	return 0
+}
+
+// UnmarshalJSON parses utilization and optional reset time from API payloads.
+//
+// Parameters:
+//
+//	data - raw JSON for a single window usage object.
+//
+// Returns:
+//
+//	error - non-nil on malformed JSON; nil otherwise.
 func (w *WindowUsage) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Utilization *float64 `json:"utilization"`
@@ -74,9 +134,11 @@ func (w *WindowUsage) UnmarshalJSON(data []byte) error {
 	}
 	w.Utilization = raw.Utilization
 	if raw.ResetsAtRaw != nil {
-		if ts, err := time.Parse(time.RFC3339Nano, *raw.ResetsAtRaw); err == nil {
-			w.ResetsAt = &ts
+		ts, err := time.Parse(time.RFC3339Nano, *raw.ResetsAtRaw)
+		if err != nil {
+			return fmt.Errorf("resets_at parse: %w", err)
 		}
+		w.ResetsAt = &ts
 	}
 	return nil
 }
